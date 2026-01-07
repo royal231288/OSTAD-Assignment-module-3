@@ -1,0 +1,203 @@
+name: Test and Deploy Node.js Application
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: |
+          npm run check -- --reporter json > test-results.json || true
+          npm run check -- --reporter spec
+
+      - name: Generate test report
+        run: |
+          echo "Test Results Summary" > test-summary.txt
+          echo "===================" >> test-summary.txt
+          echo "Date: $(date)" >> test-summary.txt
+          echo "Node Version: ${{ matrix.node-version }}" >> test-summary.txt
+          echo "Branch: ${{ github.ref_name }}" >> test-summary.txt
+          echo "Commit: ${{ github.sha }}" >> test-summary.txt
+          echo "" >> test-summary.txt
+
+          if [ -f test-results.json ]; then
+            echo "JSON Test Results:" >> test-summary.txt
+            cat test-results.json >> test-summary.txt
+          fi
+
+          echo "" >> test-summary.txt
+          echo "Test execution completed at $(date)" >> test-summary.txt
+
+      - name: Upload test results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-node-${{ matrix.node-version }}
+          path: |
+            test-results.json
+            test-summary.txt
+          retention-days: 30
+        if: always()
+
+  deploy:
+    name: Deploy Application
+    needs: test
+    runs-on: self-hosted
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: "npm"
+
+      - name: Download test results artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-results-*
+          path: ./test-artifacts
+          merge-multiple: true
+
+      - name: Display test artifacts content
+        run: |
+          echo "=== Test Artifacts Content ==="
+          echo "Available artifacts:"
+          ls -la ./test-artifacts/
+          echo ""
+
+          echo "=== Test Summary ==="
+          if [ -f ./test-artifacts/test-summary.txt ]; then
+            cat ./test-artifacts/test-summary.txt
+          else
+            echo "No test summary found"
+          fi
+          echo ""
+
+          echo "=== JSON Test Results ==="
+          if [ -f ./test-artifacts/test-results.json ]; then
+            echo "JSON results file found:"
+            cat ./test-artifacts/test-results.json
+          else
+            echo "No JSON test results found"
+          fi
+
+      - name: Install production dependencies
+        run: npm ci --only=production
+
+      - name: Create deployment directory
+        run: |
+          DEPLOY_DIR="/opt/node-apps/$(basename ${{ github.repository }})"
+          echo "DEPLOY_DIR=$DEPLOY_DIR" >> $GITHUB_ENV
+          sudo mkdir -p $DEPLOY_DIR
+          sudo chown $USER:$USER $DEPLOY_DIR
+
+      - name: Stop existing application
+        run: |
+          # Stop existing PM2 process if running
+          if command -v pm2 &> /dev/null; then
+            pm2 stop node-express-app || true
+            pm2 delete node-express-app || true
+          fi
+
+          # Kill any process running on port 3000
+          sudo lsof -ti:3000 | xargs sudo kill -9 || true
+        continue-on-error: true
+
+      - name: Deploy application files
+        run: |
+          echo "Deploying to: $DEPLOY_DIR"
+
+          # Copy application files
+          cp -r src/ $DEPLOY_DIR/
+          cp package*.json $DEPLOY_DIR/
+          cp -r node_modules/ $DEPLOY_DIR/
+
+          # Copy any additional files if they exist
+          [ -f index.html ] && cp index.html $DEPLOY_DIR/ || true
+          [ -d public ] && cp -r public/ $DEPLOY_DIR/ || true
+
+          echo "Files deployed successfully"
+          ls -la $DEPLOY_DIR
+
+      - name: Start application
+        run: |
+          cd $DEPLOY_DIR
+
+          # Install PM2 if not available
+          if ! command -v pm2 &> /dev/null; then
+            npm install -g pm2
+          fi
+
+          # Create PM2 ecosystem file
+          cat > ecosystem.config.js << EOF
+          module.exports = {
+            apps: [{
+              name: 'node-express-app',
+              script: 'src/server.js',
+              instances: 1,
+              autorestart: true,
+              watch: false,
+              max_memory_restart: '1G',
+              env: {
+                NODE_ENV: 'production',
+                PORT: 3000
+              }
+            }]
+          };
+          EOF
+
+          # Start application with PM2
+          pm2 start ecosystem.config.js
+          pm2 save
+
+          # Wait for application to start
+          sleep 5
+
+          # Verify deployment
+          if curl -f http://localhost:3000/api; then
+            echo "✅ Deployment successful! Application is running on port 3000"
+          else
+            echo "❌ Deployment verification failed"
+            exit 1
+          fi
+
+      - name: Deployment summary
+        run: |
+          echo "=== Deployment Summary ==="
+          echo "Repository: ${{ github.repository }}"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Deploy Directory: $DEPLOY_DIR"
+          echo "Deployment Time: $(date)"
+          echo ""
+          echo "=== Application Status ==="
+          pm2 status
+          echo ""
+          echo "=== Application Logs (last 20 lines) ==="
+          pm2 logs node-express-app --lines 20 --nostream || true
