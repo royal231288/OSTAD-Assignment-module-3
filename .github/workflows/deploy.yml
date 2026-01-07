@@ -71,11 +71,26 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20.x"
-          cache: "npm"
+      - name: Setup Node.js manually
+        run: |
+          # Check if Node.js 20.x is already installed
+          if command -v node &> /dev/null; then
+            NODE_VERSION=$(node --version)
+            echo "Current Node.js version: $NODE_VERSION"
+            if [[ $NODE_VERSION == v20* ]]; then
+              echo "Node.js 20.x is already installed"
+              exit 0
+            fi
+          fi
+
+          # Install Node.js 20.x manually
+          echo "Installing Node.js 20.x..."
+          curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+          sudo apt-get install -y nodejs
+
+          # Verify installation
+          echo "Node.js version: $(node --version)"
+          echo "npm version: $(npm --version)"
 
       - name: Download test results artifacts
         uses: actions/download-artifact@v4
