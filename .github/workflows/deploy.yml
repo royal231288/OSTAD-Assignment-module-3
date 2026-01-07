@@ -110,6 +110,16 @@ jobs:
       - name: Install production dependencies
         run: npm ci --only=production
 
+      - name: Install PM2 globally
+        run: |
+          # Check if PM2 is already installed
+          if ! command -v pm2 &> /dev/null; then
+            echo "Installing PM2 globally..."
+            npm install -g pm2
+          else
+            echo "PM2 is already installed: $(pm2 --version)"
+          fi
+
       - name: Create deployment directory
         run: |
           DEPLOY_DIR="/opt/node-apps/$(basename ${{ github.repository }})"
@@ -149,10 +159,8 @@ jobs:
         run: |
           cd $DEPLOY_DIR
 
-          # Install PM2 if not available
-          if ! command -v pm2 &> /dev/null; then
-            npm install -g pm2
-          fi
+          # Verify PM2 is available
+          pm2 --version
 
           # Create PM2 ecosystem file
           cat > ecosystem.config.js << EOF
