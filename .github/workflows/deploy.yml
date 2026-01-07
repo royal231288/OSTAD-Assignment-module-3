@@ -173,7 +173,7 @@ jobs:
       - name: Start application
         run: |
           cd $DEPLOY_DIR
-
+          pwd 
           # Verify PM2 is available
           pm2 --version
 
